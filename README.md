@@ -1,11 +1,17 @@
-# Northstar Pay - Payment Processing & Transaction Orchestration
+# Bank Settlement & Reconciliation Service
 
-Northstar Pay is a full-stack payment operations demo: a .NET 10 API, React/TypeScript dashboard, and SQLite-backed transaction store. It demonstrates payment initiation, provider abstraction, retry handling, signed webhooks, idempotency, transaction status, and audit history.
+Full-stack financial operations application with a .NET 10 API, React/TypeScript dashboard, SQLite persistence, and RabbitMQ-backed settlement reconciliation. The original payment sandbox remains available alongside the reconciliation workflows.
 
-> **Sandbox only.** The included simulator and configurable HTTP adapters are for development and provider sandbox testing, not live payment processing. The app accepts provider-issued payment tokens only; it does not collect or store card numbers or CVV. Authentication and tenant isolation are not implemented, so do not expose this service publicly as a running application.
+> **Development/demo only.** Authentication and tenant isolation are not implemented. Do not expose this service publicly or use it for production financial operations. The payment sandbox accepts provider-issued tokens only; it does not collect or store card numbers or CVV.
 
 ## Features
 
+- **Settlement imports:** validate and persist CSV files with row-level field checks, duplicate-reference detection, and upload size/record limits.
+- **Internal transaction ingestion:** add internal transaction records with unique, case-insensitive references.
+- **Matching and exceptions:** match on reference, amount, and currency; classify matched, duplicate, mismatched, missing-internal, and missing-settlement records.
+- **RabbitMQ processing:** durable queue messages, acknowledgements, single-message prefetch, retry-on-worker interruption, and recovery of unfinished batches.
+- **Reports and audit:** batch summaries, detailed row findings, retryable failed batches, and timestamped audit entries for ingestion and reconciliation outcomes.
+- **React reconciliation workspace:** upload bank files, add internal transactions, monitor background batch status, and inspect findings and audit history.
 - **Payment lifecycle:** initiate a payment, record provider attempts, and track `Processing`, `Succeeded`, or `Failed` status.
 - **Provider abstraction:** `IPaymentProvider` and a provider registry support a local simulator and multiple named HTTP sandbox gateways.
 - **Idempotency:** a unique database constraint prevents duplicate payments for a key. Identical retries return the existing payment; a different payload with the same key returns `409 Conflict`.
@@ -18,15 +24,15 @@ Northstar Pay is a full-stack payment operations demo: a .NET 10 API, React/Type
 ## Architecture
 
 ```text
-React + TypeScript dashboard
-    |  /api (Vite development proxy)
+React + TypeScript operations dashboard
+    |  /api (Vite or Nginx proxy)
     v
 ASP.NET Core minimal API
-    |-- PaymentService: validation, idempotency, lifecycle, retries
-    |-- IPaymentProvider: simulator or configured HTTP sandbox adapters
-    |-- WebhookService: signature validation and event deduplication
+    |-- ReconciliationService: CSV import, matching, findings, reports, audit
+    |-- RabbitMqReconciliationQueue + hosted worker: durable background jobs
+    |-- PaymentService / WebhookService: existing payment sandbox
     v
-EF Core + SQLite: transactions, attempts, audit entries, webhook receipts
+EF Core + SQLite: reconciliation, payments, attempts, webhooks, audit entries
 ```
 
 ### Technology
@@ -37,15 +43,28 @@ EF Core + SQLite: transactions, attempts, audit entries, webhook receipts
 | Persistence | EF Core 10, SQLite |
 | API docs | Swashbuckle / Swagger |
 | UI | React, TypeScript, Vite, Lucide |
+| Background jobs | RabbitMQ.Client, RabbitMQ |
+| Local orchestration | Docker Compose |
 | Tests | xUnit, SQLite in-memory |
 
-## Run locally
+## Run with Docker Compose (recommended)
 
-Use .NET SDK `10.0.403` (selected by `global.json`) and Node.js 20.19+ or 22.12+.
-
-Start the API from the repository root:
+Copy the development environment template and start the API, UI, and RabbitMQ:
 
 ```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
+
+Open the dashboard at `http://localhost:5173`, API/Swagger at `http://localhost:5208/swagger`, and RabbitMQ management at `http://localhost:15672`. Local demo credentials are read from `.env`; replace them before any non-local use. SQLite and RabbitMQ data are stored in named Docker volumes.
+
+## Run the API and UI directly
+
+Use .NET SDK `10.0.403` (selected by `global.json`) and Node.js 20.19+ or 22.12+. Start RabbitMQ first (for example with the Compose `rabbitmq` service), then configure the API credentials without putting them in source:
+
+```powershell
+dotnet user-secrets init --project src\PaymentOrchestration.Api
+dotnet user-secrets set "RabbitMq:Password" "<local RabbitMQ password>" --project src\PaymentOrchestration.Api
 dotnet run --project src\PaymentOrchestration.Api
 ```
 
@@ -59,7 +78,21 @@ npm run dev
 
 Open the Vite URL, normally `http://localhost:5173`. The development server proxies `/api` to the backend at `http://127.0.0.1:5208`. Set `VITE_API_PROXY_TARGET` if the API uses a different address. Swagger UI is at `http://localhost:5208/swagger`; the OpenAPI document is at `/swagger/v1/swagger.json`.
 
-The API creates `payment-orchestration.db` in its working directory on first run. The database, build outputs, and local secret files are ignored by Git.
+The API initializes its SQLite schema on startup and creates `payment-orchestration.db` in its working directory. The database, build outputs, and local secret files are ignored by Git. Configure RabbitMQ host/user/port using `RabbitMq:*` user-secrets or environment variables when not using Compose.
+
+## Reconcile a settlement file
+
+The CSV requires a header and at least one row. Column order is flexible; header names are case-insensitive.
+
+```csv
+transactionReference,amount,currency,settledAt
+PAY-1001,125.50,USD,2026-11-12T10:30:00Z
+PAY-1002,42.00,EUR,2026-11-12T10:31:00Z
+```
+
+Use the dashboard's **Add internal transaction** form or `POST /api/reconciliation/transactions` to ingest internal records, then upload the CSV. Amounts in CSV files are decimal major-unit amounts with at most two fractional digits and are converted to integer minor units. References are matched case-insensitively; amount and currency must also match.
+
+For each file, later duplicate bank references are reported as `Duplicate`; unmatched bank records as `MissingInternal`; amount or currency differences as `Mismatched`; and internal transactions within the file's UTC settlement-date range that do not appear in the bank file as `MissingSettlement`. Completed reports include all findings and an audit history. Failed batches can be requeued from the UI or API.
 
 ## Try the sandbox
 
@@ -99,6 +132,14 @@ The legacy `PaymentGateway:SandboxBaseUrl` and `PaymentGateway:SandboxApiKey` se
 | `GET` | `/api/payments/{id}` | Retrieve status and provider attempts |
 | `GET` | `/api/payments/{id}/audit` | Retrieve audit history |
 | `POST` | `/api/webhooks/{provider}` | Process a signed provider event |
+| `GET` | `/api/reconciliation/transactions?limit=100` | List recent internal transactions |
+| `POST` | `/api/reconciliation/transactions` | Ingest an internal transaction |
+| `POST` | `/api/reconciliation/batches` | Import a multipart CSV settlement file and enqueue processing |
+| `GET` | `/api/reconciliation/batches?limit=50` | List recent batches and summaries |
+| `GET` | `/api/reconciliation/batches/{id}` | Retrieve a batch's findings and audit history |
+| `GET` | `/api/reconciliation/reports/{id}` | Retrieve the generated reconciliation report |
+| `POST` | `/api/reconciliation/batches/{id}/requeue` | Requeue a pending or failed batch |
+| `GET` | `/api/reconciliation/audit?limit=100` | List recent reconciliation audit events |
 
 Example payment request:
 
@@ -147,21 +188,22 @@ npm run build
 npm run lint
 ```
 
-The API tests cover idempotency, retry behavior, pending payments, webhook signature and deduplication, provider resolution, and recent-payment listing. The provider adapter also has an HTTP request contract test.
+The API tests cover payment lifecycle and webhook behavior, along with reconciliation matching, duplicate and mismatch classification, missing records, CSV validation, and case-insensitive transaction uniqueness. The provider adapter also has an HTTP request contract test.
 
 ## Project layout
 
 ```text
-src/PaymentOrchestration.Api/       ASP.NET Core API, providers, persistence, webhooks
-tests/PaymentOrchestration.Tests/   xUnit service and provider tests
-ui/                                 React payment operations dashboard
+src/PaymentOrchestration.Api/       ASP.NET Core API, reconciliation, payments, persistence
+tests/PaymentOrchestration.Tests/   xUnit service, provider, and reconciliation tests
+ui/                                 React payment and reconciliation dashboards
+Dockerfile / docker-compose.yml     API, UI, SQLite volume, and RabbitMQ local stack
 ```
 
 ## Resume-ready description
 
-**Title:** Payment Processing & Transaction Orchestration Platform
+**Title:** Bank Settlement & Reconciliation Service
 
-Built a full-stack payment orchestration demo using .NET 10, ASP.NET Core, EF Core/SQLite, and React/TypeScript. Designed provider abstractions and sandbox integrations with idempotent payment initiation, bounded retries, signed and deduplicated webhooks, persistent transaction audit history, and an interactive operations dashboard. Added focused automated tests for payment lifecycle, provider behavior, and webhook validation.
+Built a full-stack reconciliation service with .NET 10, ASP.NET Core, EF Core/SQLite, RabbitMQ, and React/TypeScript. Implemented validated bank CSV imports, internal transaction ingestion, asynchronous matching, and reports for duplicates, missing records, and amount/currency mismatches. Added durable queue processing, retryable batches, audit trails, Docker Compose development setup, and focused automated tests.
 
 ## Production considerations
 
