@@ -1,0 +1,27 @@
+@PaymentOrchestration.Api_HostAddress = http://localhost:5208
+
+GET {{PaymentOrchestration.Api_HostAddress}}/health
+Accept: application/json
+
+###
+
+GET {{PaymentOrchestration.Api_HostAddress}}/api/providers
+Accept: application/json
+
+###
+
+GET {{PaymentOrchestration.Api_HostAddress}}/api/payments?limit=20
+Accept: application/json
+
+###
+
+POST {{PaymentOrchestration.Api_HostAddress}}/api/payments
+Idempotency-Key: demo-order-001
+Content-Type: application/json
+
+{
+  "amountMinor": 2599,
+  "currency": "USD",
+  "provider": "sandbox",
+  "paymentToken": "sandbox_retry"
+}

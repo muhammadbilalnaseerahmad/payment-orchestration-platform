@@ -15,16 +15,15 @@ import {
   Ellipsis,
   ExternalLink,
   Filter,
+  LayoutDashboard,
   Plus,
   RefreshCw,
-  Scale,
   Search,
   ShieldCheck,
   X,
   XCircle,
 } from 'lucide-react'
 import './App.css'
-import ReconciliationApp from './ReconciliationApp'
 
 type PaymentStatus = 'Processing' | 'Succeeded' | 'Failed'
 type StatusFilter = 'All payments' | 'Succeeded' | 'Processing' | 'Failed'
@@ -118,7 +117,7 @@ function StatusBadge({ status }: { status: PaymentStatus }) {
   )
 }
 
-function PaymentsApp({ onReconciliation }: { onReconciliation: () => void }) {
+function App() {
   const [payments, setPayments] = useState<Payment[]>([])
   const [providers, setProviders] = useState<string[]>(['sandbox'])
   const [filter, setFilter] = useState<StatusFilter>('All payments')
@@ -273,8 +272,8 @@ function PaymentsApp({ onReconciliation }: { onReconciliation: () => void }) {
 
         <div className="nav-label">WORKSPACE</div>
         <nav className="main-nav" aria-label="Main navigation">
-          <button className="nav-item" onClick={onReconciliation}><Scale size={17} /> Reconciliation</button>
-          <button className="nav-item active"><CreditCard size={17} /> Payments <span className="nav-count">{payments.length}</span></button>
+          <a className="nav-item" href="#overview"><LayoutDashboard size={17} /> Overview</a>
+          <a className="nav-item active" href="#payments"><CreditCard size={17} /> Payments <span className="nav-count">{payments.length}</span></a>
         </nav>
 
         <div className="sidebar-bottom">
@@ -549,13 +548,6 @@ function downloadCsv(payments: Payment[]) {
   link.download = 'payments.csv'
   link.click()
   URL.revokeObjectURL(url)
-}
-
-function App() {
-  const [activeView, setActiveView] = useState<'payments' | 'reconciliation'>('reconciliation')
-  return activeView === 'reconciliation'
-    ? <ReconciliationApp onBack={() => setActiveView('payments')} />
-    : <PaymentsApp onReconciliation={() => setActiveView('reconciliation')} />
 }
 
 export default App
